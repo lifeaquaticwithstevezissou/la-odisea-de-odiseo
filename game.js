@@ -46,10 +46,19 @@ function initAudio(){
       masterGain=actx.createGain(); masterGain.gain.value=muted?0:1; masterGain.connect(actx.destination);
       musicGain=actx.createGain(); musicGain.gain.value=0.5; musicGain.connect(masterGain);
     }
-    if(actx.state==='suspended') actx.resume();
+    if(actx.state!=='running') actx.resume();
+    // iOS unlock: playing a 1-sample silent buffer inside a user gesture is what
+    // actually flips Safari's audio session on -- resume() alone is not enough
+    const b=actx.createBuffer(1,1,22050), s=actx.createBufferSource();
+    s.buffer=b; s.connect(actx.destination); s.start(0);
     startMusic();
   }catch(e){ actx=null; }
 }
+// iOS only counts some gestures (esp. touchend) as unlock-worthy, and can
+// suspend the context when the app backgrounds -- re-arm on every chance
+['touchend','pointerup','click','keydown'].forEach(ev=>
+  document.addEventListener(ev,()=>{ if(!actx||actx.state!=='running') initAudio(); },{passive:true}));
+document.addEventListener('visibilitychange',()=>{ if(!document.hidden&&actx&&actx.state!=='running') actx.resume(); });
 function toggleMute(){ muted=!muted; if(masterGain) masterGain.gain.value=muted?0:1; return muted; }
 // one enveloped oscillator note; freq can glide to slideTo; routed to bus (SFX->master, music->musicGain)
 function tone(freq,dur,type,vol,slideTo,delay,bus){
@@ -110,6 +119,9 @@ const sfxPanel=()=>N('G4',0.12,'triangle',0.09,'C5');                // the big 
 // ================= rng / sketch helpers =================
 let boil = 0;
 let waterShake = 0;  // brief one-shot shake of the water chip when it goes low
+let tutT = 0;        // seconds left on the little controls tutorial bubble
+let plantHoldId = null; // pointer currently held down on a palm (hold-to-replant)
+let hoverCard = -1;  // album card index under the cursor (hover lift)
 function h32(n){ n|=0; n=Math.imul(n^(n>>>15),0x2c1b3c6d); n=Math.imul(n^(n>>>12),0x297a2d39); n^=n>>>15; return (n>>>0)/4294967296; }
 function sr(s){ return h32(Math.imul(s|0, 374761393)); }
 function srr(s,a,b){ return a + (b-a)*sr(s); }
@@ -289,17 +301,17 @@ function decorate(seg,s){
   const w=seg.x1-seg.x0;
   // curbside packed bumper-to-bumper with parked cars (denser now), tiny gaps of
   // brush/rock, and the occasional wreck of one car rammed into another
-  const carClear=x=>!scen.some(o=>(o.kind==='car'||o.kind==='crash')&&Math.abs(o.x-x)<(o.kind==='crash'?118:74));
-  for(let x=seg.x0+50;x<seg.x1-50;x+=srr(((s+x)|0),72,92)){
+  const carClear=x=>!scen.some(o=>(o.kind==='car'||o.kind==='crash')&&Math.abs(o.x-x)<(o.kind==='crash'?120:80));
+  for(let x=seg.x0+48;x<seg.x1-48;x+=srr(((s+x)|0),58,76)){
     const r=sr((s|0)+((x|0)*7));
     if(r<0.09){
       if(carClear(x)&&x<seg.x1-90) scen.push({kind:'crash',x,y:seg.y,seed:(s+(x|0))|0,s:srr(((s+x+1)|0),0.9,1.05)});
     }
-    else if(r<0.86){
+    else if(r<0.92){
       if(carClear(x)) scen.push({kind:'car',x,y:seg.y,seed:(s+(x|0))|0,s:srr(((s+x+1)|0),0.85,1.08)});
     }
-    else if(r<0.93) scen.push({kind:'brush',x,y:seg.y,seed:(s+(x|0))|0,s:1});
-    else if(r<0.97) scen.push({kind:'rock',x,y:seg.y,seed:(s+(x|0))|0,s:srr(((s+x+2)|0),0.6,1.1)});
+    else if(r<0.96) scen.push({kind:'brush',x,y:seg.y,seed:(s+(x|0))|0,s:1});
+    else scen.push({kind:'rock',x,y:seg.y,seed:(s+(x|0))|0,s:srr(((s+x+2)|0),0.6,1.1)});
   }
   // platforms nearly everywhere: an upper route you can ride across most of the
   // level, dropping to the ground only to reach palms
@@ -423,6 +435,8 @@ function releasePtr(id){ if(ptrZones.delete(id)) recomputeVk(); }
 function inRect(lx,ly,r){ return lx>=r.x-6&&lx<=r.x+r.w+6&&ly>=r.y-6&&ly<=r.y+r.h+6; }
 // album layout rects (keep in sync with drawAlbum's card grid)
 const ALBSHOT={x:VW/2-23,y:VH-70,w:46,h:46};
+const ALBREL={x:VW/2-93,y:VH-70,w:46,h:46};   // reload (restart run) in the album
+const OVERREL={x:VW/2-100,y:565,w:46,h:46};   // reload on the death screen, left of the shot button
 const BIGALB={x:VW/2-80,y:405,w:160,h:70}; // death-screen shortcut to the tree album
 const INFOCARD={x:46,y:150,w:VW-92,h:400};
 const INFOSHOT={x:INFOCARD.x+INFOCARD.w-58,y:INFOCARD.y+INFOCARD.h-58,w:46,h:46};
@@ -445,12 +459,6 @@ function downloadShot(){
     setTimeout(()=>URL.revokeObjectURL(a.href),5000);
   });
 }
-function plantTap(){
-  const t=player&&player.plantTree;
-  if(!t||!player.grounded) return;
-  t.progress=Math.min(1.2,t.progress+0.22);
-  if(t.progress>=1) completeSwap(t);
-}
 cv.addEventListener('pointerdown',e=>{
   if(e.pointerType==='touch'&&e.cancelable) e.preventDefault(); // no browser gestures, ever
   initAudio();                        // unlock audio on the first touch gesture
@@ -464,6 +472,7 @@ cv.addEventListener('pointerdown',e=>{
       return;
     }
     if(inRect(lx,ly,ALBSHOT)){ downloadShot(); return; }
+    if(inRect(lx,ly,ALBREL)){ restartRun(); return; }
     const ci=cardAt(lx,ly);
     if(ci>=0&&(treeCounts[NATIVES[ci]]||0)>0){ infoKind=NATIVES[ci]; return; }
     toggleAlbum();                 // tap outside the cards closes the album
@@ -471,31 +480,33 @@ cv.addEventListener('pointerdown',e=>{
   }
   if(state==='over'){
     if(!btnsShown&&overPlan) overT=overPlan.btnsAt+0.01;      // first tap skips the reveal
+    else if(inRect(lx,ly,OVERREL)) restartRun();              // reload button
     else if(inRect(lx,ly,BIGALB)) toggleAlbum();              // big album button
     else restartRun();                                        // any other tap restarts
     return;
   }
   if(state!=='play'||!player) return;
-  // jump is now a swipe-up gesture (handled in pointermove); touch layout:
-  // bottom strip = replant, everywhere else = hold left/right to walk.
+  // press-and-HOLD directly on a nearby palm to replant it
+  const wx=lx+cam.x, wy=ly+cam.y;
+  const pt=player.plantTree;
+  if(pt&&Math.abs(wx-pt.x)<44&&wy>pt.base-100&&wy<pt.base+16){ plantHoldId=e.pointerId; return; }
+  // otherwise: hold a side to walk, swipe up anywhere to jump
   ptrSwipe.set(e.pointerId, ly);               // anchor the swipe at the touch point
-  if(ly>VH*0.72) plantTap();
-  else setPtrZone(e.pointerId, lx<VW/2?'l':'r');
+  setPtrZone(e.pointerId, lx<VW/2?'l':'r');
 });
 cv.addEventListener('pointermove',e=>{
+  const [lx,ly]=toLogical(e);
+  if(state==='album'){ hoverCard=cardAt(lx,ly); return; }     // card hover lift
   // only react to PRESSED pointers (in ptrSwipe). Otherwise a hovering mouse
   // with no button held would keep steering the character around.
-  if(state!=='play'||!player||!ptrSwipe.has(e.pointerId)) return;
-  const [lx,ly]=toLogical(e);
+  if(state!=='play'||!player||e.pointerId===plantHoldId||!ptrSwipe.has(e.pointerId)) return;
   // swipe-up-anywhere -> jump: fire when the finger flicks up past the lowest point it reached
   const low=ptrSwipe.get(e.pointerId);
   if(ly>low) ptrSwipe.set(e.pointerId,ly);       // moved down: lower the anchor
   else if(low-ly>SWIPE_JUMP){ player.jbuf=0.12; ptrSwipe.set(e.pointerId,ly); } // flicked up: jump
-  // horizontal walk follows the finger everywhere except the bottom replant strip
-  if(ly<=VH*0.72) setPtrZone(e.pointerId, lx<VW/2?'l':'r');
-  else if(ptrZones.has(e.pointerId)){ ptrZones.delete(e.pointerId); recomputeVk(); }
+  setPtrZone(e.pointerId, lx<VW/2?'l':'r');
 });
-function endPtr(id){ releasePtr(id); ptrSwipe.delete(id); }
+function endPtr(id){ if(id===plantHoldId) plantHoldId=null; releasePtr(id); ptrSwipe.delete(id); }
 cv.addEventListener('pointerup',e=>endPtr(e.pointerId));
 cv.addEventListener('pointercancel',e=>endPtr(e.pointerId));
 
@@ -507,7 +518,7 @@ function kDown(){ return keys.ArrowDown||keys.KeyS; }
 function updatePlayer(dt){
   const p=player;
   const move=(kRight()?1:0)-(kLeft()?1:0);
-  const planting=p.plantTree&&kDown()&&p.grounded;
+  const planting=p.plantTree&&(kDown()||plantHoldId!==null)&&p.grounded;
   const cap=p.grounded?RUN:AIR;          // faster in the air: leap clean over cops
   const target=planting?0:move*cap;
   const acc=p.grounded?2800:1700;
@@ -581,7 +592,7 @@ function updatePlayer(dt){
   }
   for(const t of trees){
     if(t.kind!=='palm'||t.swapT>=0) continue;
-    if(t===p.plantTree&&kDown()&&p.grounded&&Math.abs(p.vx)<8){
+    if(t===p.plantTree&&(kDown()||plantHoldId!==null)&&p.grounded&&Math.abs(p.vx)<8){
       t.progress+=dt/0.85;
       if(t.progress>=1) completeSwap(t);
     } else t.progress=Math.max(0,t.progress-dt*(t===p.plantTree?0.45:1.4)); // slow decay nearby: taps can stack
@@ -1122,7 +1133,7 @@ function updateHair(p,dt){
 // ================= drawing: characters =================
 function drawCowboy(p){
   const m=Math.abs(p.vx)>10, ph=p.anim*6;
-  const planting=p.plantTree&&kDown()&&p.grounded&&state==='play';
+  const planting=p.plantTree&&(kDown()||plantHoldId!==null)&&p.grounded&&state==='play';
   ctx.save(); ctx.translate(p.x,p.feet); ctx.scale(p.dir,1);
   if(planting) ctx.rotate(0.12);
   const lsw=m?Math.sin(ph)*5:0, lsw2=m?Math.sin(ph+Math.PI)*5:0;
@@ -1152,7 +1163,6 @@ function drawCowboy(p){
   skLine(0,-16,0,-9,132,0.4); ink(1.4,C.ink); // fly seam (black)
   // white short-sleeve tee (torso kept thinner than the hair)
   skPath([[-5,-11],[5,-11],[4,-27],[-4,-27]],13,1.2,true); fillA(C.tee); ink(2.2);
-  skLine(0,-25,0,-12,135,0.5); ink(1,C.ink); // center fold (black)
   // head group -- shifted back to center when still, forward when running
   ctx.save(); ctx.translate(headBack,0);
   skCircle(2,-33,6.5,18); fillA(C.skin); ink(2);
@@ -1267,9 +1277,12 @@ function drawProgress(t){
   skCircle(x,y,10,t.seed+9); ink(1.4,C.ink,0.35);
 }
 function drawHint(t){
-  const y=t.base-96+Math.sin(tm*5)*4, x=t.x;
-  skPath([[x-5,y-10],[x+5,y-10],[x+5,y-2],[x+9,y-2],[x,y+8],[x-9,y-2],[x-5,y-2]],t.seed+99,0.8,true);
-  fillA('#fffdf4',0.8); ink(2);
+  // "press and hold here": a fingertip with touch ripples, gently bobbing
+  const y=t.base-98+Math.sin(tm*5)*3, x=t.x;
+  skLine(x,y-12,x,y-2,t.seed+98,0.5); ink(3,C.skin);
+  skCircle(x,y+2,4.5,t.seed+99,0.7); fillA(C.skin); ink(1.8);
+  ctx.beginPath(); ctx.arc(x,y+3,10,-2.5,-0.6); ink(1.8,C.ink,0.55);
+  ctx.beginPath(); ctx.arc(x,y+3,15,-2.3,-0.8); ink(1.6,C.ink,0.32);
 }
 function drawTreeLabel(t){
   const dx=Math.abs(t.x-player.x), dy=Math.abs(t.base-player.feet);
@@ -1316,6 +1329,13 @@ function drawShotBtn(r,seed){
   skLine(cx,r.y+10,cx,r.y+24,seed+1,0.5); ink(2.6);
   skPath([[cx-5,r.y+20],[cx+5,r.y+20],[cx,r.y+28]],seed+2,0.4,true); fillA(C.ink);
   skLine(r.x+11,r.y+r.h-11,r.x+r.w-11,r.y+r.h-11,seed+3,0.5); ink(2.6);
+}
+function drawReloadBtn(r,seed){
+  skPath([[r.x,r.y],[r.x+r.w,r.y],[r.x+r.w,r.y+r.h],[r.x,r.y+r.h]],seed,1.4,true);
+  fillA('#fffdf4',0.95); ink(2.2);
+  const cx=r.x+r.w/2, cy=r.y+r.h/2;
+  ctx.beginPath(); ctx.arc(cx,cy,9,-0.5,4.3); ink(2.6);
+  skPath([[cx+12,cy-9],[cx+3,cy-8],[cx+9,cy-1]],seed+1,0.4,true); fillA(C.ink);
 }
 function drawAlbumBtn(){
   if(state==='caught') return;
@@ -1380,6 +1400,46 @@ function drawGoodBoyLogo(cx,cy){
   ctx.beginPath(); ctx.ellipse(0,0,orx*1.05,orx*1.5,0,0,7); ctx.fillStyle='#e5342f'; ctx.fill();
   ctx.restore();
   ctx.textAlign='center';
+}
+function drawTutorial(){
+  // iconographic controls hint above the character, shown for a few seconds
+  // after starting a run. Left: phone (swipe up / hold sides / hold palm).
+  // Right: pc (arrow keys). Fades out over its final second.
+  const a=Math.min(1,tutT);
+  const px=player.x, py=player.feet-96;
+  skPath([[px-100,py-28],[px+100,py-28],[px+100,py+26],[px-100,py+26]],9101,2,true);
+  fillA('#fffdf4',0.94*a); ink(2.4,C.ink,a);
+  skPath([[px-7,py+26],[px+7,py+26],[px,py+38]],9102,0.6,true); fillA('#fffdf4',0.94*a);
+  const tri=(x,y,d,s)=>{
+    const t=d==='l'?[[x+s,y-s],[x+s,y+s],[x-s,y]]:d==='r'?[[x-s,y-s],[x-s,y+s],[x+s,y]]
+          :d==='u'?[[x-s,y+s],[x+s,y+s],[x,y-s]]:[[x-s,y-s],[x+s,y-s],[x,y+s]];
+    skPath(t,((x*3+y*7)|0),0.3,true); fillA(C.ink,a);
+  };
+  // phone glyph
+  skPath([[px-90,py-14],[px-74,py-14],[px-74,py+14],[px-90,py+14]],9104,0.8,true);
+  fillA('#fffdf4',a); ink(1.8,C.ink,a);
+  skLine(px-85,py+10,px-79,py+10,9105,0.3); ink(1.4,C.ink,0.7*a);
+  // swipe up = jump
+  skLine(px-60,py+10,px-60,py-8,9106,0.6); ink(2.2,C.ink,a); tri(px-60,py-13,'u',4);
+  // hold sides = walk
+  tri(px-40,py,'l',5); tri(px-26,py,'r',5);
+  // hold the palm = replant
+  ctx.save(); ctx.translate(px-4,py+16); ctx.scale(0.22,0.22); drawPalm(0,0,5,1); ctx.restore();
+  skCircle(px-4,py-4,3,9107,0.5); fillA(C.skin,a); ink(1.4,C.ink,a);
+  ctx.beginPath(); ctx.arc(px-4,py-4,7,-2.4,-0.7); ink(1.4,C.ink,0.5*a);
+  // divider
+  skLine(px+14,py-20,px+14,py+18,9108,0.8); ink(1.2,C.ink,0.3*a);
+  // pc glyph (monitor)
+  skPath([[px+26,py-14],[px+50,py-14],[px+50,py+2],[px+26,py+2]],9109,0.8,true);
+  fillA('#fffdf4',a); ink(1.8,C.ink,a);
+  skLine(px+38,py+2,px+38,py+8,9110,0.3); ink(1.8,C.ink,a);
+  skLine(px+32,py+9,px+44,py+9,9111,0.3); ink(1.8,C.ink,a);
+  // arrow keys
+  const kc=(x,y,d)=>{
+    skPath([[x-6,y-6],[x+6,y-6],[x+6,y+6],[x-6,y+6]],((x*7)|0),0.5,true);
+    fillA('#fffdf4',a); ink(1.5,C.ink,a); tri(x,y,d,3);
+  };
+  kc(px+62,py+9,'l'); kc(px+76,py-7,'u'); kc(px+76,py+9,'d'); kc(px+90,py+9,'r');
 }
 function drawUI(){
   if(state==='menu') return;
@@ -1458,12 +1518,6 @@ function drawSkyScreen(){
   grad.addColorStop(0,'rgba(242,166,64,0.10)');
   grad.addColorStop(1,'rgba(242,166,64,0)');
   ctx.fillStyle=grad; ctx.fillRect(0,0,VW,VH*0.62);
-  skCircle(122,84,24,42); fillA(C.sunFill,0.85); ink(2.2,C.sun);
-  for(let i=0;i<9;i++){
-    const a=i/9*6.283+0.2;
-    skLine(122+Math.cos(a)*32,84+Math.sin(a)*32,122+Math.cos(a)*43,84+Math.sin(a)*43,43+i,1);
-    ink(1.8,C.sun,0.8);
-  }
   for(let i=0;i<3;i++){
     drawCloud(mod(i*577+tm*7-cam.x*0.12,VW+360)-180,64+i*44,800+i*9);
   }
@@ -1482,6 +1536,25 @@ function drawSkyScreen(){
     drawCerro(gi*spacing-off, VH*0.615, 0.9+sr(gi*7)*0.25, 3000+gi*13);
   }
   drawCity(); // low flat skyline in front of the cerro's base
+  drawSun();  // drawn LAST so nothing in the sky ever covers it
+}
+function drawSun(){
+  // lowered out of the UI bar, radiating heat: pulsing halo + slowly turning rays
+  const sx=330, sy=205;
+  const pul=Math.sin(tm*2.2)*0.5+0.5;
+  const g=ctx.createRadialGradient(sx,sy,10,sx,sy,80+pul*12);
+  g.addColorStop(0,'rgba(246,190,80,0.5)');
+  g.addColorStop(0.55,'rgba(246,190,80,0.16)');
+  g.addColorStop(1,'rgba(246,190,80,0)');
+  ctx.fillStyle=g; ctx.beginPath(); ctx.arc(sx,sy,94,0,7); ctx.fill();
+  skCircle(sx,sy,24,42); fillA(C.sunFill,0.95); ink(2.2,C.sun);
+  for(let i=0;i<12;i++){
+    const a=i/12*6.283+tm*0.15;
+    const L=(i%2?38:48)+pul*5;
+    skLine(sx+Math.cos(a)*30,sy+Math.sin(a)*30,sx+Math.cos(a)*L,sy+Math.sin(a)*L,43+i,1);
+    ink(2,C.sun,0.85);
+  }
+  skCircle(sx,sy,13,49); fillA('#ffdf8a',0.9);
 }
 function drawCity(){
   // Hermosillo skyline: low and flat, pure silhouette, no detail.
@@ -1520,10 +1593,13 @@ function drawAlbum(){
   for(let i=0;i<NATIVES.length;i++){
     const k=NATIVES[i];
     const col=i%2, row=(i/2)|0;
-    const x=gx+(cw+gx)*col, y=80+(chh+11)*row;
-    skPath([[x,y],[x+cw,y],[x+cw,y+chh],[x,y+chh]],(i+1)*93,1.6,true);
-    fillA('#fffdf4'); ink(2.2);
     const count=treeCounts[k]||0, unlocked=count>0;
+    const lift=(i===hoverCard&&unlocked)?-5:0;   // hover: card floats up
+    const x=gx+(cw+gx)*col, y=80+(chh+11)*row+lift;
+    if(lift){ skPath([[x+4,y+8],[x+cw+4,y+8],[x+cw+4,y+chh+8],[x+4,y+chh+8]],(i+1)*95,1.6,true); fillA(C.ink,0.12); }
+    skPath([[x,y],[x+cw,y],[x+cw,y+chh],[x,y+chh]],(i+1)*93,1.6,true);
+    fillA('#fffdf4'); ink(lift?3:2.2);
+    if(lift){ skPath([[x-3,y-3],[x+cw+3,y-3],[x+cw+3,y+chh+3],[x-3,y+chh+3]],(i+1)*97,1.4,true); ink(2.2,C.gold,0.9); }
     drawNative(k,x+cw/2,y+70,7+i*11,0.82);
     if(!unlocked){
       ctx.fillStyle='rgba(250,245,232,0.85)';
@@ -1541,6 +1617,7 @@ function drawAlbum(){
     }
   }
   drawShotBtn(ALBSHOT,552);
+  drawReloadBtn(ALBREL,553);
   // info card for a tapped species
   if(infoKind){
     ctx.fillStyle='rgba(58,53,46,0.28)'; ctx.fillRect(0,0,VW,VH);
@@ -1564,7 +1641,7 @@ function drawAlbum(){
 }
 function toggleAlbum(){
   sfxClick();
-  infoKind=null;
+  infoKind=null; hoverCard=-1; plantHoldId=null;
   ptrZones.clear(); ptrSwipe.clear(); recomputeVk(); // never carry held walk-pointers across screens
   if(state==='album'){
     state=albumReturn;
@@ -1646,6 +1723,7 @@ function drawOverScreen(){
     ctx.font='700 13px '+FONT; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillStyle=C.ink;
     ctx.fillText(nUnl+'/'+NATIVES.length,BIGALB.x+BIGALB.w-2,BIGALB.y+2);
     ctx.restore();
+    drawReloadBtn(OVERREL,668);
   }
   drawSparts();
 }
@@ -1683,6 +1761,7 @@ function render(){
         if(state==='play'&&t.kind==='native') drawTreeLabel(t);
       }
       drawFloats();
+      if(state==='play'&&tutT>0) drawTutorial();
     }
     drawParts();
     ctx.restore();
@@ -1715,6 +1794,7 @@ function update(dt){
   tm+=dt;
   boil=Math.floor(tm*7.7);
   if(waterShake>0) waterShake=Math.max(0,waterShake-dt);
+  if(state==='play'&&tutT>0) tutT-=dt;
   updateHair(state==='menu'?menuDude:player,dt);   // rope-hair settles in every state
   if(state==='album') return;      // album pauses the world
 
@@ -1775,9 +1855,10 @@ function restartRun(){
   shotBtn.style.display='none';
   sparts=[]; overPlan=null; btnsShown=false; infoKind=null;
   ptrZones.clear(); ptrSwipe.clear(); recomputeVk();
-  resetWorld(); state='play';
+  plantHoldId=null;
+  resetWorld(); state='play'; tutT=6;
 }
-startBtn.onclick=()=>{ initAudio(); sfxClick(); startBtn.style.display='none'; startBtn.blur(); resetWorld(); state='play'; };
+startBtn.onclick=()=>{ initAudio(); sfxClick(); startBtn.style.display='none'; startBtn.blur(); resetWorld(); state='play'; tutT=6; };
 shotBtn.onclick=()=>{ shotBtn.blur(); sfxShutter(); downloadShot(); };
 
 resetWorld();
