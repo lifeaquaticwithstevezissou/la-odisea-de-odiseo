@@ -1314,12 +1314,9 @@ function drawProgress(t){
   skCircle(x,y,10,t.seed+9); ink(1.4,C.ink,0.35);
 }
 function drawHint(t){
-  // "press and hold here": a fingertip with touch ripples, gently bobbing
-  const y=t.base-98+Math.sin(tm*5)*3, x=t.x;
-  skLine(x,y-12,x,y-2,t.seed+98,0.5); ink(3,C.skin);
-  skCircle(x,y+2,4.5,t.seed+99,0.7); fillA(C.skin); ink(1.8);
-  ctx.beginPath(); ctx.arc(x,y+3,10,-2.5,-0.6); ink(1.8,C.ink,0.55);
-  ctx.beginPath(); ctx.arc(x,y+3,15,-2.3,-0.8); ink(1.6,C.ink,0.32);
+  // "hold here": a bobbing filled down-arrow, same style as the tutorial triangles
+  const y=t.base-100+Math.sin(tm*5)*4, x=t.x;
+  skPath([[x-7,y-6],[x+7,y-6],[x,y+6]],t.seed+99,0.4,true); fillA(C.ink);
 }
 function drawTreeLabel(t){
   const dx=Math.abs(t.x-player.x), dy=Math.abs(t.base-player.feet);
@@ -1479,8 +1476,7 @@ function drawTutorial(){
   skLine(lx0+28,cy+76,lx0+28,cy+56,9106,0.6); ink(2.2,C.ink,a); tri(lx0+28,cy+51,'u',4);
   tri(lx0+62,cy+66,'l',5); tri(lx0+78,cy+66,'r',5);
   ctx.save(); ctx.translate(lx0+114,cy+82); ctx.scale(0.24,0.24); drawPalm(0,0,5,1); ctx.restore();
-  skCircle(lx0+114,cy+60,3,9107,0.5); fillA(C.skin,a); ink(1.4,C.ink,a);
-  ctx.beginPath(); ctx.arc(lx0+114,cy+60,7,-2.4,-0.7); ink(1.4,C.ink,0.5*a);
+  tri(lx0+114,cy+56,'d',5);
   // ---- right card: pc ----
   card(rx0,9201);
   const mcx=rx0+cw/2;
@@ -1541,11 +1537,7 @@ function drawCloud(x,y,seed){
   skCircle(x-17,y+4,11,seed+2,1.5); fillA('#ffffff',0.7); ink(1.6,C.ink,0.3);
 }
 function drawMast(x,y,h,seed){
-  skLine(x,y,x,y-h,seed,0.6); ink(1.6,C.ink,0.4);
-  for(let i=1;i<=3;i++){
-    const yy=y-h*i/3.5, w=4-(i-1);
-    skLine(x-w,yy,x+w,yy,seed+i,0.4); ink(1,C.ink,0.3);
-  }
+  skLine(x,y,x,y-h,seed,0.6); ink(1.6,C.ink,0.35);
   ctx.beginPath(); ctx.arc(x,y-h,1.3,0,7); fillA('#c0504a',0.5);
 }
 function drawCerro(sx,baseY,s,seed){
@@ -1553,14 +1545,13 @@ function drawCerro(sx,baseY,s,seed){
   // terraced slopes and antenna masts on the summit
   ctx.save(); ctx.translate(sx,baseY); ctx.scale(s,s);
   skPath([[-170,0],[-150,-22],[-118,-58],[-86,-96],[-52,-124],[-18,-138],[8,-136],[38,-118],[62,-92],[88,-70],[118,-44],[142,-20],[158,0]],seed,2.5,true);
-  fillA('#ddd7c8',0.5); ink(2,C.ink,0.3);
+  fillA('#ddd7c8',0.6);
   // small rocky outcrop to its right
   skPath([[150,0],[162,-18],[178,-34],[196,-30],[208,-14],[214,0]],seed+5,2,true);
-  fillA('#ddd7c8',0.45); ink(1.8,C.ink,0.25);
-  // terraced slope roads
-  skLine(-96,-70,-30,-84,seed+8,1.5); ink(1.2,C.ink,0.16);
-  skLine(-58,-104,20,-112,seed+9,1.5); ink(1.2,C.ink,0.16);
-  skLine(30,-96,86,-64,seed+10,1.5); ink(1.2,C.ink,0.16);
+  fillA('#ddd7c8',0.5);
+  // soft shading band instead of outlines
+  skPath([[-86,-96],[-52,-124],[-18,-138],[8,-136],[8,-96],[-40,-88]],seed+8,2,true);
+  fillA('#e7e1d2',0.4);
   // the masts
   drawMast(-26,-134,44,seed+11);
   drawMast(-2,-138,56,seed+12);
@@ -1643,23 +1634,15 @@ function drawCity(){
   }
   ctx.lineTo(VW+30,bottom); ctx.closePath();
   fillA('#e0dbcd',0.85);
-  // faint sketchy roofline stroke, matching the cerro's outline weight
-  for(const [gi,x0,mid,h1,h2] of roof){
-    skLine(x0,baseY-h1,mid,baseY-h1,gi*3+911,1.2); ink(1.6,C.ink,0.16);
-    skLine(mid,baseY-h2,x0+step,baseY-h2,gi*3+912,1.2); ink(1.6,C.ink,0.16);
-  }
-  // rooftop life: tv antennas, water tanks, ac boxes -- sparse, low alpha
+  // rooftop life: water tanks and ac boxes -- soft silhouettes, no outlines
   for(const [gi,x0,mid,h1,h2] of roof){
     const r=sr(gi*23+921);
-    if(r<0.28){ const ax=x0+step*0.22; // antenna
-      skLine(ax,baseY-h1,ax,baseY-h1-11,gi+922,0.5); ink(1.3,C.ink,0.28);
-      skLine(ax-4,baseY-h1-8,ax+4,baseY-h1-8,gi+923,0.4); ink(1.1,C.ink,0.24);
-    } else if(r<0.46){ const tx=mid+step*0.12; // water tank
+    if(r<0.26){ const tx=mid+step*0.12; // water tank
       skPath([[tx-5,baseY-h2],[tx-5,baseY-h2-8],[tx+5,baseY-h2-8],[tx+5,baseY-h2]],gi+924,0.6,true);
-      fillA('#d4cebd',0.7); ink(1.3,C.ink,0.22);
-    } else if(r<0.58){ const bx=x0+step*0.6; // ac box
+      fillA('#d4cebd',0.75);
+    } else if(r<0.42){ const bx=x0+step*0.6; // ac box
       skPath([[bx-4,baseY-h1],[bx-4,baseY-h1-5],[bx+4,baseY-h1-5],[bx+4,baseY-h1]],gi+925,0.5,true);
-      fillA('#d9d3c2',0.7); ink(1.2,C.ink,0.2);
+      fillA('#d9d3c2',0.75);
     }
   }
 }
@@ -1950,9 +1933,9 @@ function restartRun(){
   sparts=[]; overPlan=null; btnsShown=false; infoKind=null;
   ptrZones.clear(); ptrSwipe.clear(); recomputeVk();
   plantHoldId=null;
-  resetWorld(); state='play'; tutT=6;
+  resetWorld(); state='play'; tutT=3.5;
 }
-startBtn.onclick=()=>{ initAudio(); sfxClick(); startBtn.style.display='none'; startBtn.blur(); resetWorld(); state='play'; tutT=6; };
+startBtn.onclick=()=>{ initAudio(); sfxClick(); startBtn.style.display='none'; startBtn.blur(); resetWorld(); state='play'; tutT=3.5; };
 
 resetWorld();
 requestAnimationFrame(frame);
