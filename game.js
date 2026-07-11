@@ -433,11 +433,23 @@ function setPtrZone(id,z){
 }
 function releasePtr(id){ if(ptrZones.delete(id)) recomputeVk(); }
 function inRect(lx,ly,r){ return lx>=r.x-6&&lx<=r.x+r.w+6&&ly>=r.y-6&&ly<=r.y+r.h+6; }
-// album layout rects (keep in sync with drawAlbum's card grid)
-const ALBSHOT={x:VW/2-23,y:VH-70,w:46,h:46};
-const ALBREL={x:VW/2-93,y:VH-70,w:46,h:46};   // reload (restart run) in the album
-const OVERREL={x:VW/2-100,y:565,w:46,h:46};   // reload on the death screen, left of the shot button
+// album layout rects (keep in sync with drawAlbum's card grid).
+// bottom action pairs sit symmetric around the center line
+const ALBREL={x:VW/2-58,y:VH-70,w:46,h:46};   // reload (restart run) in the album
+const ALBSHOT={x:VW/2+12,y:VH-70,w:46,h:46};  // share, right of reload
+const OVERREL={x:VW/2-58,y:562,w:46,h:46};    // reload on the death screen
+const OVERSHARE={x:VW/2+12,y:562,w:46,h:46};  // share, right of reload
 const BIGALB={x:VW/2-80,y:405,w:160,h:70}; // death-screen shortcut to the tree album
+// hover / press feedback for every canvas button
+let hoverBtn=null, pressBtn=null, pressT=0;
+function visibleButtons(){
+  const L=[];
+  if(state!=='caught'){ L.push(['alb',ALB],['mute',MUTE]); }
+  if(state==='album'){ if(infoKind) L.push(['ishot',INFOSHOT]); else L.push(['arel',ALBREL],['ashot',ALBSHOT]); }
+  if(state==='over'&&btnsShown){ L.push(['orel',OVERREL],['oshot',OVERSHARE],['balb',BIGALB]); }
+  return L;
+}
+function buttonAt(lx,ly){ for(const [k,r] of visibleButtons()) if(inRect(lx,ly,r)) return k; return null; }
 const INFOCARD={x:46,y:150,w:VW-92,h:400};
 const INFOSHOT={x:INFOCARD.x+INFOCARD.w-58,y:INFOCARD.y+INFOCARD.h-58,w:46,h:46};
 function cardAt(lx,ly){
@@ -449,12 +461,21 @@ function cardAt(lx,ly){
   }
   return -1;
 }
-function downloadShot(){
-  cv.toBlob(b=>{
+function shareShot(){
+  sfxShutter();
+  cv.toBlob(async b=>{
     if(!b) return;
+    // native share sheet where available (phones); silent fallback to download
+    try{
+      const f=new File([b],'la-odisea-de-odiseo.png',{type:'image/png'});
+      if(navigator.canShare&&navigator.canShare({files:[f]})){
+        await navigator.share({files:[f],title:'La odisea de Odiseo'});
+        return;
+      }
+    }catch(err){ if(err&&err.name==='AbortError') return; }
     const a=document.createElement('a');
     a.href=URL.createObjectURL(b);
-    a.download='sonoran-doodle.png';
+    a.download='la-odisea-de-odiseo.png';
     a.click();
     setTimeout(()=>URL.revokeObjectURL(a.href),5000);
   });
@@ -463,15 +484,17 @@ cv.addEventListener('pointerdown',e=>{
   if(e.pointerType==='touch'&&e.cancelable) e.preventDefault(); // no browser gestures, ever
   initAudio();                        // unlock audio on the first touch gesture
   const [lx,ly]=toLogical(e);
+  const bk=buttonAt(lx,ly);
+  if(bk){ pressBtn=bk; pressT=0.16; } // press squish on whichever button was hit
   if(state!=='caught'&&inRect(lx,ly,MUTE)){ toggleMute(); sfxClick(); return; }
   if(state!=='caught'&&inRect(lx,ly,ALB)){ toggleAlbum(); return; }
   if(state==='album'){
     if(infoKind){
-      if(inRect(lx,ly,INFOSHOT)) downloadShot();
+      if(inRect(lx,ly,INFOSHOT)) shareShot();
       else infoKind=null;          // tap anywhere else closes the info card
       return;
     }
-    if(inRect(lx,ly,ALBSHOT)){ downloadShot(); return; }
+    if(inRect(lx,ly,ALBSHOT)){ shareShot(); return; }
     if(inRect(lx,ly,ALBREL)){ restartRun(); return; }
     const ci=cardAt(lx,ly);
     if(ci>=0&&(treeCounts[NATIVES[ci]]||0)>0){ infoKind=NATIVES[ci]; return; }
@@ -481,6 +504,7 @@ cv.addEventListener('pointerdown',e=>{
   if(state==='over'){
     if(!btnsShown&&overPlan) overT=overPlan.btnsAt+0.01;      // first tap skips the reveal
     else if(inRect(lx,ly,OVERREL)) restartRun();              // reload button
+    else if(inRect(lx,ly,OVERSHARE)) shareShot();             // share button
     else if(inRect(lx,ly,BIGALB)) toggleAlbum();              // big album button
     else restartRun();                                        // any other tap restarts
     return;
@@ -496,6 +520,7 @@ cv.addEventListener('pointerdown',e=>{
 });
 cv.addEventListener('pointermove',e=>{
   const [lx,ly]=toLogical(e);
+  hoverBtn=buttonAt(lx,ly);                                   // button hover feedback
   if(state==='album'){ hoverCard=cardAt(lx,ly); return; }     // card hover lift
   // only react to PRESSED pointers (in ptrSwipe). Otherwise a hovering mouse
   // with no button held would keep steering the character around.
@@ -767,11 +792,23 @@ function drawGround(){
   for(let i=1;i<pts.length;i++) jseg(pts[i-1][0],pts[i-1][1],pts[i][0],pts[i][1],edgeSeed(i-1),2.4);
   ink(2.4);
 
+  // sidewalk edge: a subtle darker band along the top of the concrete
+  for(const s of vis){
+    ctx.beginPath();
+    ctx.moveTo(s.x0,s.y); ctx.lineTo(s.x1,s.y);
+    ctx.lineTo(s.x1,s.y+7); ctx.lineTo(s.x0,s.y+7); ctx.closePath();
+    fillA('#bdb9af',0.55);
+  }
   for(const s of vis){
     for(let x=Math.ceil(s.x0/48)*48;x<s.x1;x+=48){
       const r=sr(x*7+worldSeed);
       if(r<0.3){ skLine(x,s.y+srr(x,8,26),x+srr(x+1,5,10),s.y+srr(x+2,10,30),x|0,1); ink(1.2,C.ink,0.3); }
       else if(r<0.55){ skLine(x,s.y,x+srr(x+3,-3,3),s.y-srr(x+4,5,10),x|0,0.8); ink(1.4,'#9aa86b',0.8); }
+      else if(r<0.68){ skLine(x,s.y+3.5,x+16,s.y+3.5,(x|0)+5,0.4); ink(2.2,'#c9a23c',0.4); } // painted curb dash
+      else if(r<0.75){ // manhole cover
+        ctx.beginPath(); ctx.ellipse(x,s.y+16,7,3,0,0,7); fillA('#a8a49a',0.8);
+        skEllipse(x,s.y+16,7,3,(x|0)+6); ink(1.3,C.ink,0.3);
+      }
     }
   }
 }
@@ -1322,43 +1359,57 @@ function drawCrown(x,y,w){
   skPath([[x-w/2,y],[x-w/2,y-h*0.7],[x-w/4,y-h*0.4],[x,y-h],[x+w/4,y-h*0.4],[x+w/2,y-h*0.7],[x+w/2,y]],(x|0)+7,0.8,true);
   fillA(C.gold); ink(1.8);
 }
-function drawShotBtn(r,seed){
-  skPath([[r.x,r.y],[r.x+r.w,r.y],[r.x+r.w,r.y+r.h],[r.x,r.y+r.h]],seed,1.4,true);
-  fillA('#fffdf4',0.95); ink(2.2);
-  const cx=r.x+r.w/2;
-  skLine(cx,r.y+10,cx,r.y+24,seed+1,0.5); ink(2.6);
-  skPath([[cx-5,r.y+20],[cx+5,r.y+20],[cx,r.y+28]],seed+2,0.4,true); fillA(C.ink);
-  skLine(r.x+11,r.y+r.h-11,r.x+r.w-11,r.y+r.h-11,seed+3,0.5); ink(2.6);
-}
-function drawReloadBtn(r,seed){
-  skPath([[r.x,r.y],[r.x+r.w,r.y],[r.x+r.w,r.y+r.h],[r.x,r.y+r.h]],seed,1.4,true);
-  fillA('#fffdf4',0.95); ink(2.2);
+// every canvas button flows through here: soft shadow at rest, lift on hover,
+// squish on press -- consistent tactile feel across the whole UI
+function chipFx(key,r,seed,inner){
+  const hov=hoverBtn===key, prs=pressBtn===key;
+  const s=prs?0.9:hov?1.07:1;
   const cx=r.x+r.w/2, cy=r.y+r.h/2;
-  ctx.beginPath(); ctx.arc(cx,cy,9,-0.5,4.3); ink(2.6);
-  skPath([[cx+12,cy-9],[cx+3,cy-8],[cx+9,cy-1]],seed+1,0.4,true); fillA(C.ink);
+  ctx.save();
+  ctx.translate(cx,cy); ctx.scale(s,s); ctx.translate(-cx,-cy);
+  const dy=hov&&!prs?-2:0;
+  ctx.translate(0,dy);
+  skPath([[r.x+3,r.y+4-dy],[r.x+r.w+3,r.y+4-dy],[r.x+r.w+3,r.y+r.h+4-dy],[r.x+3,r.y+r.h+4-dy]],seed+9,1.2,true);
+  fillA(C.ink,hov?0.16:0.10);
+  skPath([[r.x,r.y],[r.x+r.w,r.y],[r.x+r.w,r.y+r.h],[r.x,r.y+r.h]],seed,1.4,true);
+  fillA(hov?'#ffffff':'#fffdf4',0.96); ink(hov?2.8:2.2);
+  inner(cx,cy,r);
+  ctx.restore();
+}
+function drawShareBtn(r,key,seed){
+  chipFx(key,r,seed,(cx,cy)=>{
+    // share: a box with an arrow flying out the top
+    skPath([[cx-8,cy+1],[cx-8,cy+10],[cx+8,cy+10],[cx+8,cy+1]],seed+2,0.6); ink(2.2);
+    skLine(cx,cy+4,cx,cy-9,seed+3,0.5); ink(2.4);
+    skPath([[cx-5,cy-6],[cx+5,cy-6],[cx,cy-13]],seed+4,0.4,true); fillA(C.ink);
+  });
+}
+function drawReloadBtn(r,key,seed){
+  chipFx(key,r,seed,(cx,cy)=>{
+    ctx.beginPath(); ctx.arc(cx,cy,9,-0.5,4.3); ink(2.6);
+    skPath([[cx+12,cy-9],[cx+3,cy-8],[cx+9,cy-1]],seed+1,0.4,true); fillA(C.ink);
+  });
 }
 function drawAlbumBtn(){
   if(state==='caught') return;
-  skPath([[ALB.x,ALB.y],[ALB.x+ALB.w,ALB.y],[ALB.x+ALB.w,ALB.y+ALB.h],[ALB.x,ALB.y+ALB.h]],881,1.4,true);
-  fillA('#fffdf4',0.92); ink(2.2);
-  if(state==='album'){
-    skLine(ALB.x+14,ALB.y+14,ALB.x+ALB.w-14,ALB.y+ALB.h-14,882,0.8); ink(2.8);
-    skLine(ALB.x+ALB.w-14,ALB.y+14,ALB.x+14,ALB.y+ALB.h-14,883,0.8); ink(2.8);
-  } else {
-    ctx.save(); ctx.translate(ALB.x+ALB.w/2,ALB.y+ALB.h-9); ctx.scale(0.44,0.44); drawPaloVerde(77); ctx.restore();
-  }
+  chipFx('alb',ALB,881,(cx,cy)=>{
+    if(state==='album'){
+      skLine(ALB.x+14,ALB.y+14,ALB.x+ALB.w-14,ALB.y+ALB.h-14,882,0.8); ink(2.8);
+      skLine(ALB.x+ALB.w-14,ALB.y+14,ALB.x+14,ALB.y+ALB.h-14,883,0.8); ink(2.8);
+    } else {
+      ctx.save(); ctx.translate(cx,ALB.y+ALB.h-9); ctx.scale(0.44,0.44); drawPaloVerde(77); ctx.restore();
+    }
+  });
 }
 function drawMuteBtn(){
   if(state==='caught') return;
-  const b=MUTE, cx=b.x+b.w/2, cy=b.y+b.h/2;
-  skPath([[b.x,b.y],[b.x+b.w,b.y],[b.x+b.w,b.y+b.h],[b.x,b.y+b.h]],884,1.2,true);
-  fillA('#fffdf4',0.92); ink(2);
-  // little speaker
-  skPath([[cx-8,cy-3],[cx-3,cy-3],[cx+2,cy-8],[cx+2,cy+8],[cx-3,cy+3],[cx-8,cy+3]],885,0.6,true);
-  fillA(C.ink,0.85); ink(1.4);
-  if(muted){ skLine(cx+5,cy-6,cx+12,cy+6,886,0.6); ink(2.4,C.alert); } // slash when muted
-  else { ctx.beginPath(); ctx.arc(cx+4,cy,5,-0.9,0.9); ink(1.8,C.ink,0.7);
-         ctx.beginPath(); ctx.arc(cx+4,cy,9,-0.8,0.8); ink(1.6,C.ink,0.45); } // sound waves
+  chipFx('mute',MUTE,884,(cx,cy)=>{
+    skPath([[cx-8,cy-3],[cx-3,cy-3],[cx+2,cy-8],[cx+2,cy+8],[cx-3,cy+3],[cx-8,cy+3]],885,0.6,true);
+    fillA(C.ink,0.85); ink(1.4);
+    if(muted){ skLine(cx+5,cy-6,cx+12,cy+6,886,0.6); ink(2.4,C.alert); } // slash when muted
+    else { ctx.beginPath(); ctx.arc(cx+4,cy,5,-0.9,0.9); ink(1.8,C.ink,0.7);
+           ctx.beginPath(); ctx.arc(cx+4,cy,9,-0.8,0.8); ink(1.6,C.ink,0.45); } // sound waves
+  });
 }
 function drawTitle(){
   // logo title -- the top of the visual hierarchy on the start screen, sitting
@@ -1402,44 +1453,48 @@ function drawGoodBoyLogo(cx,cy){
   ctx.textAlign='center';
 }
 function drawTutorial(){
-  // iconographic controls hint above the character, shown for a few seconds
-  // after starting a run. Left: phone (swipe up / hold sides / hold palm).
-  // Right: pc (arrow keys). Fades out over its final second.
+  // two separate control cards, centered in the window: phone | pc.
+  // Fades out over its final second.
   const a=Math.min(1,tutT);
-  const px=player.x, py=player.feet-96;
-  skPath([[px-100,py-28],[px+100,py-28],[px+100,py+26],[px-100,py+26]],9101,2,true);
-  fillA('#fffdf4',0.94*a); ink(2.4,C.ink,a);
-  skPath([[px-7,py+26],[px+7,py+26],[px,py+38]],9102,0.6,true); fillA('#fffdf4',0.94*a);
+  const cy=318, cw=150, ch=96, gap=24;
+  const lx0=VW/2-gap/2-cw, rx0=VW/2+gap/2;
+  const card=(x,seed)=>{
+    skPath([[x+3,cy+5],[x+cw+3,cy+5],[x+cw+3,cy+ch+5],[x+3,cy+ch+5]],seed+9,1.4,true); fillA(C.ink,0.10*a);
+    skPath([[x,cy],[x+cw,cy],[x+cw,cy+ch],[x,cy+ch]],seed,1.8,true);
+    fillA('#fffdf4',0.94*a); ink(2.6,C.ink,a);
+  };
   const tri=(x,y,d,s)=>{
     const t=d==='l'?[[x+s,y-s],[x+s,y+s],[x-s,y]]:d==='r'?[[x-s,y-s],[x-s,y+s],[x+s,y]]
           :d==='u'?[[x-s,y+s],[x+s,y+s],[x,y-s]]:[[x-s,y-s],[x+s,y-s],[x,y+s]];
     skPath(t,((x*3+y*7)|0),0.3,true); fillA(C.ink,a);
   };
-  // phone glyph
-  skPath([[px-90,py-14],[px-74,py-14],[px-74,py+14],[px-90,py+14]],9104,0.8,true);
+  // ---- left card: phone ----
+  card(lx0,9101);
+  const pcx=lx0+cw/2;
+  // phone glyph, top center
+  skPath([[pcx-8,cy+12],[pcx+8,cy+12],[pcx+8,cy+38],[pcx-8,cy+38]],9104,0.8,true);
   fillA('#fffdf4',a); ink(1.8,C.ink,a);
-  skLine(px-85,py+10,px-79,py+10,9105,0.3); ink(1.4,C.ink,0.7*a);
-  // swipe up = jump
-  skLine(px-60,py+10,px-60,py-8,9106,0.6); ink(2.2,C.ink,a); tri(px-60,py-13,'u',4);
-  // hold sides = walk
-  tri(px-40,py,'l',5); tri(px-26,py,'r',5);
-  // hold the palm = replant
-  ctx.save(); ctx.translate(px-4,py+16); ctx.scale(0.22,0.22); drawPalm(0,0,5,1); ctx.restore();
-  skCircle(px-4,py-4,3,9107,0.5); fillA(C.skin,a); ink(1.4,C.ink,a);
-  ctx.beginPath(); ctx.arc(px-4,py-4,7,-2.4,-0.7); ink(1.4,C.ink,0.5*a);
-  // divider
-  skLine(px+14,py-20,px+14,py+18,9108,0.8); ink(1.2,C.ink,0.3*a);
-  // pc glyph (monitor)
-  skPath([[px+26,py-14],[px+50,py-14],[px+50,py+2],[px+26,py+2]],9109,0.8,true);
+  skLine(pcx-3,cy+34,pcx+3,cy+34,9105,0.3); ink(1.4,C.ink,0.7*a);
+  // gestures row: swipe up | hold sides | hold palm
+  skLine(lx0+28,cy+76,lx0+28,cy+56,9106,0.6); ink(2.2,C.ink,a); tri(lx0+28,cy+51,'u',4);
+  tri(lx0+62,cy+66,'l',5); tri(lx0+78,cy+66,'r',5);
+  ctx.save(); ctx.translate(lx0+114,cy+82); ctx.scale(0.24,0.24); drawPalm(0,0,5,1); ctx.restore();
+  skCircle(lx0+114,cy+60,3,9107,0.5); fillA(C.skin,a); ink(1.4,C.ink,a);
+  ctx.beginPath(); ctx.arc(lx0+114,cy+60,7,-2.4,-0.7); ink(1.4,C.ink,0.5*a);
+  // ---- right card: pc ----
+  card(rx0,9201);
+  const mcx=rx0+cw/2;
+  // monitor glyph
+  skPath([[mcx-14,cy+12],[mcx+14,cy+12],[mcx+14,cy+30],[mcx-14,cy+30]],9109,0.8,true);
   fillA('#fffdf4',a); ink(1.8,C.ink,a);
-  skLine(px+38,py+2,px+38,py+8,9110,0.3); ink(1.8,C.ink,a);
-  skLine(px+32,py+9,px+44,py+9,9111,0.3); ink(1.8,C.ink,a);
+  skLine(mcx,cy+30,mcx,cy+36,9110,0.3); ink(1.8,C.ink,a);
+  skLine(mcx-7,cy+37,mcx+7,cy+37,9111,0.3); ink(1.8,C.ink,a);
   // arrow keys
   const kc=(x,y,d)=>{
-    skPath([[x-6,y-6],[x+6,y-6],[x+6,y+6],[x-6,y+6]],((x*7)|0),0.5,true);
+    skPath([[x-7,y-7],[x+7,y-7],[x+7,y+7],[x-7,y+7]],((x*7)|0),0.5,true);
     fillA('#fffdf4',a); ink(1.5,C.ink,a); tri(x,y,d,3);
   };
-  kc(px+62,py+9,'l'); kc(px+76,py-7,'u'); kc(px+76,py+9,'d'); kc(px+90,py+9,'r');
+  kc(mcx-18,cy+72,'l'); kc(mcx,cy+54,'u'); kc(mcx,cy+72,'d'); kc(mcx+18,cy+72,'r');
 }
 function drawUI(){
   if(state==='menu') return;
@@ -1521,11 +1576,24 @@ function drawSkyScreen(){
   for(let i=0;i<3;i++){
     drawCloud(mod(i*577+tm*7-cam.x*0.12,VW+360)-180,64+i*44,800+i*9);
   }
-  for(let i=0;i<2;i++){
-    const bx=mod(tm*26+i*430-cam.x*0.2,VW+240)-120, by=110+i*46+Math.sin(tm*2+i*3)*9;
+  for(let i=0;i<3;i++){
+    const bx=mod(tm*26+i*300-cam.x*0.2,VW+240)-120, by=104+i*40+Math.sin(tm*2+i*3)*9;
     const fl=Math.sin(tm*9+i)*3;
     skLine(bx-7,by,bx,by-4-fl,880+i,0.5); ink(1.8,C.ink,0.5);
     skLine(bx,by-4-fl,bx+7,by,884+i,0.5); ink(1.8,C.ink,0.5);
+  }
+  // thin cloud wisps drifting slowly
+  for(let i=0;i<2;i++){
+    const wx=mod(i*731+tm*4-cam.x*0.08,VW+300)-150, wy=180+i*70;
+    skLine(wx,wy,wx+70,wy-3,860+i,2.2); ink(2,'#ffffff',0.5);
+    skLine(wx+14,wy+5,wx+58,wy+3,862+i,1.8); ink(1.6,'#ffffff',0.35);
+  }
+  // sun-warmed dust motes floating in the air
+  for(let i=0;i<9;i++){
+    const mx=mod(i*173+tm*(6+i%3*3)-cam.x*0.3,VW+40)-20;
+    const my=140+((i*97)%340)+Math.sin(tm*0.8+i)*10;
+    ctx.beginPath(); ctx.arc(mx,my,1.1+(i%3)*0.4,0,7);
+    fillA('#d8b878',0.14+(i%3)*0.04);
   }
   // El Cerro de la Campana rising behind the city, drifting with parallax.
   // phase keeps one cerro horizontally centered at the start of a run
@@ -1557,12 +1625,12 @@ function drawSun(){
   skCircle(sx,sy,13,49); fillA('#ffdf8a',0.9);
 }
 function drawCity(){
-  // Hermosillo skyline: low and flat, pure silhouette, no detail.
-  // The fill runs all the way to the bottom of the screen so that when the
-  // player climbs high (and the real ground scrolls off-screen), no hard
-  // bottom edge / crop of the background is ever visible.
+  // Hermosillo skyline, drawn in the same faint-ink doodle language as the
+  // cerro so the two read as one scene. The fill runs to the bottom of the
+  // screen so no hard crop is ever visible when the player climbs high.
   const par=0.15, step=90, off=cam.x*par;
   const baseY=VH*0.625, bottom=VH+40, i0=Math.floor(off/step)-1, n=Math.ceil(VW/step)+3;
+  const roof=[];
   ctx.beginPath();
   ctx.moveTo(-30,bottom);
   for(let i=0;i<=n;i++){
@@ -1571,9 +1639,29 @@ function drawCity(){
     const mid=x0+step*srr(gi*7+902,0.45,0.8);
     ctx.lineTo(x0,baseY-h1); ctx.lineTo(mid,baseY-h1);
     ctx.lineTo(mid,baseY-h2); ctx.lineTo(x0+step,baseY-h2);
+    roof.push([gi,x0,mid,h1,h2]);
   }
   ctx.lineTo(VW+30,bottom); ctx.closePath();
   fillA('#e0dbcd',0.85);
+  // faint sketchy roofline stroke, matching the cerro's outline weight
+  for(const [gi,x0,mid,h1,h2] of roof){
+    skLine(x0,baseY-h1,mid,baseY-h1,gi*3+911,1.2); ink(1.6,C.ink,0.16);
+    skLine(mid,baseY-h2,x0+step,baseY-h2,gi*3+912,1.2); ink(1.6,C.ink,0.16);
+  }
+  // rooftop life: tv antennas, water tanks, ac boxes -- sparse, low alpha
+  for(const [gi,x0,mid,h1,h2] of roof){
+    const r=sr(gi*23+921);
+    if(r<0.28){ const ax=x0+step*0.22; // antenna
+      skLine(ax,baseY-h1,ax,baseY-h1-11,gi+922,0.5); ink(1.3,C.ink,0.28);
+      skLine(ax-4,baseY-h1-8,ax+4,baseY-h1-8,gi+923,0.4); ink(1.1,C.ink,0.24);
+    } else if(r<0.46){ const tx=mid+step*0.12; // water tank
+      skPath([[tx-5,baseY-h2],[tx-5,baseY-h2-8],[tx+5,baseY-h2-8],[tx+5,baseY-h2]],gi+924,0.6,true);
+      fillA('#d4cebd',0.7); ink(1.3,C.ink,0.22);
+    } else if(r<0.58){ const bx=x0+step*0.6; // ac box
+      skPath([[bx-4,baseY-h1],[bx-4,baseY-h1-5],[bx+4,baseY-h1-5],[bx+4,baseY-h1]],gi+925,0.5,true);
+      fillA('#d9d3c2',0.7); ink(1.2,C.ink,0.2);
+    }
+  }
 }
 
 // ================= album screen =================
@@ -1616,8 +1704,8 @@ function drawAlbum(){
       drawStarIcon(x+cw/2+(j-2)*19,y+112,6,unlocked&&j<st,(i*17+j*7)|0);
     }
   }
-  drawShotBtn(ALBSHOT,552);
-  drawReloadBtn(ALBREL,553);
+  drawReloadBtn(ALBREL,'arel',553);
+  drawShareBtn(ALBSHOT,'ashot',552);
   // info card for a tapped species
   if(infoKind){
     ctx.fillStyle='rgba(58,53,46,0.28)'; ctx.fillRect(0,0,VW,VH);
@@ -1636,7 +1724,7 @@ function drawAlbum(){
     for(let i=0;i<dl.length;i++) ctx.fillText(dl[i],VW/2,r.y+256+i*21);
     const st=starsOf(infoKind);
     for(let j=0;j<5;j++) drawStarIcon(VW/2+(j-2)*24,r.y+346,7.5,j<st,(j*7+77)|0);
-    drawShotBtn(INFOSHOT,551);
+    drawShareBtn(INFOSHOT,'ishot',551);
   }
 }
 function toggleAlbum(){
@@ -1645,11 +1733,10 @@ function toggleAlbum(){
   ptrZones.clear(); ptrSwipe.clear(); recomputeVk(); // never carry held walk-pointers across screens
   if(state==='album'){
     state=albumReturn;
-    if(state==='over'&&btnsShown){ shotBtn.style.display='block'; }
     if(state==='menu'){ startBtn.style.display='block'; }
   } else if(state==='menu'||state==='play'||state==='over'){
     albumReturn=state; state='album';
-    startBtn.style.display='none'; shotBtn.style.display='none';
+    startBtn.style.display='none';
   }
 }
 
@@ -1711,7 +1798,10 @@ function drawOverScreen(){
   if(overT>pl.btnsAt){
     const u=overT-pl.btnsAt;
     const shake=Math.sin(u*30)*4*Math.exp(-2.5*u);
+    const bs=pressBtn==='balb'?0.94:hoverBtn==='balb'?1.04:1;
     ctx.save(); ctx.translate(shake,0);
+    ctx.translate(BIGALB.x+BIGALB.w/2,BIGALB.y+BIGALB.h/2); ctx.scale(bs,bs);
+    ctx.translate(-(BIGALB.x+BIGALB.w/2),-(BIGALB.y+BIGALB.h/2));
     skPath([[BIGALB.x,BIGALB.y],[BIGALB.x+BIGALB.w,BIGALB.y],[BIGALB.x+BIGALB.w,BIGALB.y+BIGALB.h],[BIGALB.x,BIGALB.y+BIGALB.h]],661,2,true);
     fillA('#fffdf4'); ink(2.6);
     ctx.save(); ctx.translate(BIGALB.x+42,BIGALB.y+BIGALB.h-12); ctx.scale(0.72,0.72); drawPalm(0,0,5,1); ctx.restore();
@@ -1723,7 +1813,8 @@ function drawOverScreen(){
     ctx.font='700 13px '+FONT; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillStyle=C.ink;
     ctx.fillText(nUnl+'/'+NATIVES.length,BIGALB.x+BIGALB.w-2,BIGALB.y+2);
     ctx.restore();
-    drawReloadBtn(OVERREL,668);
+    drawReloadBtn(OVERREL,'orel',668);
+    drawShareBtn(OVERSHARE,'oshot',669);
   }
   drawSparts();
 }
@@ -1761,10 +1852,10 @@ function render(){
         if(state==='play'&&t.kind==='native') drawTreeLabel(t);
       }
       drawFloats();
-      if(state==='play'&&tutT>0) drawTutorial();
     }
     drawParts();
     ctx.restore();
+    if(state==='play'&&tutT>0) drawTutorial();
 
     if(state==='menu') drawTitle();
     drawUI();
@@ -1777,6 +1868,11 @@ function render(){
   }
   drawAlbumBtn();
   drawMuteBtn();
+  // soft vignette: barely-there warm darkening toward the corners
+  const vg=ctx.createRadialGradient(VW/2,VH/2,VH*0.42,VW/2,VH/2,VH*0.82);
+  vg.addColorStop(0,'rgba(90,70,40,0)');
+  vg.addColorStop(1,'rgba(90,70,40,0.10)');
+  ctx.fillStyle=vg; ctx.fillRect(0,0,VW,VH);
   ctx.restore();
   // sketchy frame around the playfield
   skPath([[3,3],[VW-3,3],[VW-3,VH-3],[3,VH-3]],9001,2,true); ink(3);
@@ -1794,6 +1890,7 @@ function update(dt){
   tm+=dt;
   boil=Math.floor(tm*7.7);
   if(waterShake>0) waterShake=Math.max(0,waterShake-dt);
+  if(pressT>0){ pressT-=dt; if(pressT<=0) pressBtn=null; }
   if(state==='play'&&tutT>0) tutT-=dt;
   updateHair(state==='menu'?menuDude:player,dt);   // rope-hair settles in every state
   if(state==='album') return;      // album pauses the world
@@ -1824,7 +1921,6 @@ function update(dt){
     if(newBest&&!overPlan.confettiDone&&overT>overPlan.bestAt){ overPlan.confettiDone=true; confetti(); sfxConfetti(); }
     if(!btnsShown&&overT>overPlan.btnsAt){
       btnsShown=true;
-      shotBtn.style.display='block';
       sfxPanel();
     }
   }
@@ -1849,17 +1945,14 @@ function update(dt){
 
 // ================= ui wiring =================
 const startBtn=document.getElementById('startBtn');
-const shotBtn=document.getElementById('shotBtn');
 function restartRun(){
   sfxClick();
-  shotBtn.style.display='none';
   sparts=[]; overPlan=null; btnsShown=false; infoKind=null;
   ptrZones.clear(); ptrSwipe.clear(); recomputeVk();
   plantHoldId=null;
   resetWorld(); state='play'; tutT=6;
 }
 startBtn.onclick=()=>{ initAudio(); sfxClick(); startBtn.style.display='none'; startBtn.blur(); resetWorld(); state='play'; tutT=6; };
-shotBtn.onclick=()=>{ shotBtn.blur(); sfxShutter(); downloadShot(); };
 
 resetWorld();
 requestAnimationFrame(frame);
